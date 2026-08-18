@@ -17,7 +17,7 @@ export default async function handler(req, res) {
     }
 
     // =====================================================
-    // 1. OKNO CZASOWE - 24 GODZINY
+    // 1. OKNO 24 GODZIN
     // =====================================================
 
     const now = new Date();
@@ -30,7 +30,7 @@ export default async function handler(req, res) {
     const toIso = to.toISOString();
 
     // =====================================================
-    // 2. POBIERAMY MECZE TENISOWE Z ODDSAMI
+    // 2. POBIERAMY MECZE TENISOWE
     // =====================================================
 
     const fixturesParams = new URLSearchParams({
@@ -79,7 +79,7 @@ export default async function handler(req, res) {
         : [];
 
     // =====================================================
-    // 3. FILTRUJEMY TYLKO POPRAWNE MECZE
+    // 3. FILTRUJEMY MECZE Z NASZEGO OKNA
     // =====================================================
 
     const validFixtures = fixtures
@@ -131,86 +131,96 @@ export default async function handler(req, res) {
     }
 
     // =====================================================
-    // 4. ZBIERAMY UNIKALNE TURNIEJE
+    // 4. UNIKALNE TURNIEJE
     // =====================================================
 
     const tournamentIds = [
       ...new Set(
         validFixtures
           .map((fixture) => fixture.tournamentId)
-          .filter((id) => id !== undefined && id !== null)
+          .filter(
+            (id) =>
+              id !== undefined &&
+              id !== null
+          )
           .map(String)
       )
     ];
 
-    if (tournamentIds.length === 0) {
-      return res.status(200).json({
-        ok: true,
-        message: "Fixtures found but no tournament IDs available",
-        window: {
-          from: fromIso,
-          to: toIso,
-          hours: 24
-        },
-        fixturesFound: fixtures.length,
-        suitableFixturesFound: validFixtures.length,
-        matches: []
-      });
+    // =====================================================
+    // 5. DZIELIMY TURNIEJE NA PACZKI PO MAKS. 5
+    // =====================================================
+
+    const tournamentBatches = [];
+
+    for (
+      let i = 0;
+      i < tournamentIds.length;
+      i += 5
+    ) {
+      tournamentBatches.push(
+        tournamentIds.slice(i, i + 5)
+      );
     }
 
     // =====================================================
-    // 5. POBIERAMY ODDS DLA WSZYSTKICH TURNIEJÓW
-    //
-    // ZAMIAST 174 REQUESTÓW /odds ROBIMY 1 REQUEST.
+    // 6. POBIERAMY ODDS DLA KAŻDEJ PACZKI
     // =====================================================
 
-    const oddsParams = new URLSearchParams({
-      tournamentIds: tournamentIds.join(","),
-      bookmakers: "pinnacle",
-      language: "en",
-      oddsFormat: "decimal",
-      verbosity: "1",
-      apiKey
-    });
+    const oddsFixtures = [];
 
-    const oddsUrl =
-      `https://api.oddspapi.io/v4/odds-by-tournaments?${oddsParams.toString()}`;
+    for (const batch of tournamentBatches) {
 
-    const oddsResponse = await fetch(oddsUrl);
-    const oddsText = await oddsResponse.text();
-
-    if (!oddsResponse.ok) {
-      return res.status(oddsResponse.status).json({
-        ok: false,
-        step: "odds-by-tournaments",
-        error: "OddsPapi odds-by-tournaments request failed",
-        status: oddsResponse.status,
-        tournamentIds,
-        details: oddsText.slice(0, 2000)
+      const oddsParams = new URLSearchParams({
+        tournamentIds: batch.join(","),
+        bookmakers: "pinnacle",
+        language: "en",
+        oddsFormat: "decimal",
+        verbosity: "1",
+        apiKey
       });
+
+      const oddsUrl =
+        `https://api.oddspapi.io/v4/odds-by-tournaments?${oddsParams.toString()}`;
+
+      const oddsResponse = await fetch(oddsUrl);
+      const oddsText = await oddsResponse.text();
+
+      if (!oddsResponse.ok) {
+        return res.status(oddsResponse.status).json({
+          ok: false,
+          step: "odds-by-tournaments",
+          error: "OddsPapi odds-by-tournaments request failed",
+          status: oddsResponse.status,
+          tournamentIds: batch,
+          details: oddsText.slice(0, 2000)
+        });
+      }
+
+      let oddsData;
+
+      try {
+        oddsData = JSON.parse(oddsText);
+      } catch {
+        return res.status(502).json({
+          ok: false,
+          step: "odds-by-tournaments",
+          error: "Invalid JSON returned by OddsPapi",
+          tournamentIds: batch
+        });
+      }
+
+      const batchFixtures = Array.isArray(oddsData)
+        ? oddsData
+        : Array.isArray(oddsData?.fixtures)
+          ? oddsData.fixtures
+          : [];
+
+      oddsFixtures.push(...batchFixtures);
     }
-
-    let oddsData;
-
-    try {
-      oddsData = JSON.parse(oddsText);
-    } catch {
-      return res.status(502).json({
-        ok: false,
-        step: "odds-by-tournaments",
-        error: "Invalid JSON returned by OddsPapi"
-      });
-    }
-
-    // API może zwrócić tablicę.
-    const oddsFixtures = Array.isArray(oddsData)
-      ? oddsData
-      : Array.isArray(oddsData?.fixtures)
-        ? oddsData.fixtures
-        : [];
 
     // =====================================================
-    // 6. MAPA ODDS PO fixtureId
+    // 7. MAPA ODDS PO fixtureId
     // =====================================================
 
     const oddsByFixtureId = new Map();
@@ -228,14 +238,7 @@ export default async function handler(req, res) {
     }
 
     // =====================================================
-    // 7. BUDUJEMY MAŁĄ ODPOWIEDŹ
-    //
-    // TYLKO:
-    // - fixture
-    // - zawodnicy
-    // - turniej
-    // - godzina
-    // - Pinnacle Winner
+    // 8. BUDUJEMY MAŁĄ ODPOWIEDŹ
     // =====================================================
 
     const matches = [];
@@ -243,7 +246,9 @@ export default async function handler(req, res) {
     for (const fixture of validFixtures) {
 
       const oddsFixture =
-        oddsByFixtureId.get(fixture.fixtureId);
+        oddsByFixtureId.get(
+          fixture.fixtureId
+        );
 
       const pinnacle =
         oddsFixture?.bookmakerOdds?.pinnacle;
@@ -267,7 +272,9 @@ export default async function handler(req, res) {
         if (
           player1 &&
           player1.active !== false &&
-          Number.isFinite(Number(player1.price))
+          Number.isFinite(
+            Number(player1.price)
+          )
         ) {
           player1Price =
             Number(player1.price);
@@ -276,15 +283,15 @@ export default async function handler(req, res) {
         if (
           player2 &&
           player2.active !== false &&
-          Number.isFinite(Number(player2.price))
+          Number.isFinite(
+            Number(player2.price)
+          )
         ) {
           player2Price =
             Number(player2.price);
         }
       }
 
-      // Pomijamy mecz, jeśli nie ma kompletnego
-      // rynku Winner.
       if (
         player1Price === null ||
         player2Price === null
@@ -293,7 +300,8 @@ export default async function handler(req, res) {
       }
 
       matches.push({
-        fixtureId: fixture.fixtureId,
+        fixtureId:
+          fixture.fixtureId,
 
         participant1Id:
           fixture.participant1Id,
@@ -328,10 +336,8 @@ export default async function handler(req, res) {
           marketId: "121",
           suspended:
             pinnacle?.suspended ?? null,
-
           player1:
             player1Price,
-
           player2:
             player2Price
         }
@@ -339,7 +345,7 @@ export default async function handler(req, res) {
     }
 
     // =====================================================
-    // 8. ZWRACAMY MAŁY JSON
+    // 9. ZWRACAMY MAŁY JSON
     // =====================================================
 
     return res.status(200).json({
@@ -362,6 +368,9 @@ export default async function handler(req, res) {
 
       tournamentCount:
         tournamentIds.length,
+
+      tournamentBatches:
+        tournamentBatches.length,
 
       oddsFixturesReturned:
         oddsFixtures.length,
