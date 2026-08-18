@@ -165,58 +165,153 @@ export default async function handler(req, res) {
 
     // =====================================================
     // 6. POBIERAMY ODDS DLA KAŻDEJ PACZKI
+    //    Z OBSŁUGĄ RATE LIMIT 429
     // =====================================================
 
     const oddsFixtures = [];
 
-    for (const batch of tournamentBatches) {
+    for (
+      let batchIndex = 0;
+      batchIndex < tournamentBatches.length;
+      batchIndex++
+    ) {
+      const batch =
+        tournamentBatches[batchIndex];
 
-      const oddsParams = new URLSearchParams({
-        tournamentIds: batch.join(","),
-        bookmakers: "pinnacle",
-        language: "en",
-        oddsFormat: "decimal",
-        verbosity: "1",
-        apiKey
-      });
+      let attempt = 0;
+      let batchCompleted = false;
 
-      const oddsUrl =
-        `https://api.oddspapi.io/v4/odds-by-tournaments?${oddsParams.toString()}`;
+      while (!batchCompleted && attempt < 5) {
+        attempt++;
 
-      const oddsResponse = await fetch(oddsUrl);
-      const oddsText = await oddsResponse.text();
+        const oddsParams = new URLSearchParams({
+          tournamentIds: batch.join(","),
+          bookmakers: "pinnacle",
+          language: "en",
+          oddsFormat: "decimal",
+          verbosity: "1",
+          apiKey
+        });
 
-      if (!oddsResponse.ok) {
-        return res.status(oddsResponse.status).json({
+        const oddsUrl =
+          `https://api.oddspapi.io/v4/odds-by-tournaments?${oddsParams.toString()}`;
+
+        const oddsResponse = await fetch(oddsUrl);
+        const oddsText = await oddsResponse.text();
+
+        // -----------------------------------------------
+        // RATE LIMIT 429
+        // -----------------------------------------------
+
+        if (oddsResponse.status === 429) {
+          let retryMs = 1000;
+
+          try {
+            const errorData =
+              JSON.parse(oddsText);
+
+            if (
+              errorData?.error?.retryMs &&
+              Number.isFinite(
+                Number(errorData.error.retryMs)
+              )
+            ) {
+              retryMs =
+                Number(
+                  errorData.error.retryMs
+                ) + 150;
+            }
+          } catch {
+            // Pozostaje domyślne 1000 ms.
+          }
+
+          await new Promise((resolve) =>
+            setTimeout(resolve, retryMs)
+          );
+
+          continue;
+        }
+
+        // -----------------------------------------------
+        // INNY BŁĄD API
+        // -----------------------------------------------
+
+        if (!oddsResponse.ok) {
+          return res.status(oddsResponse.status).json({
+            ok: false,
+            step: "odds-by-tournaments",
+            error:
+              "OddsPapi odds-by-tournaments request failed",
+            status: oddsResponse.status,
+            tournamentIds: batch,
+            attempt,
+            details:
+              oddsText.slice(0, 2000)
+          });
+        }
+
+        // -----------------------------------------------
+        // PARSOWANIE ODPOWIEDZI
+        // -----------------------------------------------
+
+        let oddsData;
+
+        try {
+          oddsData =
+            JSON.parse(oddsText);
+        } catch {
+          return res.status(502).json({
+            ok: false,
+            step: "odds-by-tournaments",
+            error:
+              "Invalid JSON returned by OddsPapi",
+            tournamentIds: batch
+          });
+        }
+
+        const batchFixtures =
+          Array.isArray(oddsData)
+            ? oddsData
+            : Array.isArray(
+                oddsData?.fixtures
+              )
+              ? oddsData.fixtures
+              : [];
+
+        oddsFixtures.push(
+          ...batchFixtures
+        );
+
+        batchCompleted = true;
+      }
+
+      // -----------------------------------------------
+      // NIE UDAŁO SIĘ WYKONAĆ PACZKI
+      // -----------------------------------------------
+
+      if (!batchCompleted) {
+        return res.status(429).json({
           ok: false,
           step: "odds-by-tournaments",
-          error: "OddsPapi odds-by-tournaments request failed",
-          status: oddsResponse.status,
+          error:
+            "OddsPapi rate limit could not be cleared",
           tournamentIds: batch,
-          details: oddsText.slice(0, 2000)
+          attempts: attempt
         });
       }
 
-      let oddsData;
+      // -----------------------------------------------
+      // PRZERWA MIN. 1.1 s PRZED KOLEJNĄ PACZKĄ
+      // -----------------------------------------------
 
-      try {
-        oddsData = JSON.parse(oddsText);
-      } catch {
-        return res.status(502).json({
-          ok: false,
-          step: "odds-by-tournaments",
-          error: "Invalid JSON returned by OddsPapi",
-          tournamentIds: batch
-        });
+      if (
+        batchIndex <
+        tournamentBatches.length - 1
+      ) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, 1100)
+        );
       }
-
-      const batchFixtures = Array.isArray(oddsData)
-        ? oddsData
-        : Array.isArray(oddsData?.fixtures)
-          ? oddsData.fixtures
-          : [];
-
-      oddsFixtures.push(...batchFixtures);
     }
 
     // =====================================================
@@ -292,6 +387,7 @@ export default async function handler(req, res) {
         }
       }
 
+      // Pomijamy mecze bez kompletnego Winner.
       if (
         player1Price === null ||
         player2Price === null
