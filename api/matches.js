@@ -326,7 +326,8 @@ export default async function handler(req, res) {
     }
 
     // =====================================================
-    // 8. BUDUJEMY TYLKO WINNER / PINNACLE
+    // 8. BUDUJEMY PEŁNE MATCH INVENTORY
+    //    + WINNER / PINNACLE JEŚLI DOSTĘPNY
     // =====================================================
 
     const matches = [];
@@ -378,13 +379,9 @@ export default async function handler(req, res) {
         }
       }
 
-      // Musimy mieć oba kursy.
-      if (
-        player1Price === null ||
-        player2Price === null
-      ) {
-        continue;
-      }
+      const winnerAvailable =
+        player1Price !== null &&
+        player2Price !== null;
 
       matches.push({
         fixtureId:
@@ -414,7 +411,10 @@ export default async function handler(req, res) {
         statusId:
           fixture.statusId,
 
-        hasOdds: true,
+        hasOdds:
+          fixture.hasOdds === true,
+
+        winnerAvailable,
 
         odds: {
           bookmaker: "pinnacle",
@@ -459,7 +459,10 @@ export default async function handler(req, res) {
         oddsFixtures.length,
 
       matchesWithWinnerOdds:
-        matches.length,
+        matches.filter(
+          (match) =>
+            match.winnerAvailable === true
+        ).length,
 
       matches
     });
