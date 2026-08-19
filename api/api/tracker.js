@@ -1,47 +1,22 @@
 export default async function handler(req, res) {
-  // =====================================================
-  // 0. TYLKO POST
-  // =====================================================
-
-  if (req.method !== "POST") {
-    return res.status(405).json({
-      ok: false,
-      error: "Method not allowed"
-    });
-  }
-
   try {
     // =====================================================
-    // 1. KONFIGURACJA
+    // 0. KONFIGURACJA
     // =====================================================
 
     const supabaseUrl = process.env.SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
     const trackerKey = process.env.TRACKER_API_KEY;
 
-    if (!supabaseUrl) {
+    if (!supabaseUrl || !supabaseKey || !trackerKey) {
       return res.status(500).json({
         ok: false,
-        error: "SUPABASE_URL is not configured"
-      });
-    }
-
-    if (!supabaseKey) {
-      return res.status(500).json({
-        ok: false,
-        error: "SUPABASE_SERVICE_ROLE_KEY is not configured"
-      });
-    }
-
-    if (!trackerKey) {
-      return res.status(500).json({
-        ok: false,
-        error: "TRACKER_API_KEY is not configured"
+        error: "Tracker environment is not fully configured"
       });
     }
 
     // =====================================================
-    // 2. AUTORYZACJA TRACKERA
+    // 1. AUTORYZACJA
     // =====================================================
 
     const receivedKey = req.headers["x-tracker-key"];
@@ -57,7 +32,105 @@ export default async function handler(req, res) {
     }
 
     // =====================================================
-    // 3. WALIDACJA BODY
+    // 2. GET — ODCZYT OSTATNIEJ PREDYKCJI
+    // =====================================================
+
+    if (req.method === "GET") {
+      const fixtureId = req.query?.fixtureId;
+      const market = req.query?.market || "winner";
+
+      if (
+        typeof fixtureId !== "string" ||
+        fixtureId.trim() === ""
+      ) {
+        return res.status(400).json({
+          ok: false,
+          error: "fixtureId is required"
+        });
+      }
+
+      const params = new URLSearchParams();
+
+      params.set(
+        "fixture_id",
+        `eq.${fixtureId}`
+      );
+
+      params.set(
+        "market",
+        `eq.${market}`
+      );
+
+      // testId ma format:
+      // daily-YYYY-MM-DD-v3.9-HHMMSS
+      // więc sortowanie malejące daje najnowszy snapshot.
+      params.set(
+        "order",
+        "test_id.desc"
+      );
+
+      params.set(
+        "limit",
+        "20"
+      );
+
+      const supabaseEndpoint =
+        `${supabaseUrl}/rest/v1/tennis_predictions?${params.toString()}`;
+
+      const supabaseResponse = await fetch(
+        supabaseEndpoint,
+        {
+          method: "GET",
+          headers: {
+            "apikey": supabaseKey,
+            "Authorization": `Bearer ${supabaseKey}`,
+            "Content-Type": "application/json"
+          }
+        }
+      );
+
+      const responseText =
+        await supabaseResponse.text();
+
+      if (!supabaseResponse.ok) {
+        return res.status(502).json({
+          ok: false,
+          error: "Supabase read failed",
+          status: supabaseResponse.status,
+          details: responseText.slice(0, 3000)
+        });
+      }
+
+      let rows;
+
+      try {
+        rows = JSON.parse(responseText);
+      } catch {
+        rows = [];
+      }
+
+      return res.status(200).json({
+        ok: true,
+        fixtureId,
+        market,
+        count: Array.isArray(rows) ? rows.length : 0,
+        predictions: Array.isArray(rows) ? rows : []
+      });
+    }
+
+    // =====================================================
+    // 3. POST — ZAPIS PREDYKCJI
+    // =====================================================
+
+    if (req.method !== "POST") {
+      return res.status(405).json({
+        ok: false,
+        error: "Method not allowed"
+      });
+    }
+
+    // =====================================================
+    // 4. WALIDACJA BODY
     // =====================================================
 
     const body = req.body;
@@ -100,7 +173,7 @@ export default async function handler(req, res) {
     }
 
     // =====================================================
-    // 4. NORMALIZACJA I WALIDACJA REKORDÓW
+    // 5. NORMALIZACJA I WALIDACJA
     // =====================================================
 
     const rows = [];
@@ -220,7 +293,7 @@ export default async function handler(req, res) {
     }
 
     // =====================================================
-    // 5. ZAPIS DO SUPABASE
+    // 6. ZAPIS DO SUPABASE
     // =====================================================
 
     const supabaseEndpoint =
@@ -261,7 +334,7 @@ export default async function handler(req, res) {
     }
 
     // =====================================================
-    // 6. ODPOWIEDŹ
+    // 7. ODPOWIEDŹ
     // =====================================================
 
     return res.status(200).json({
