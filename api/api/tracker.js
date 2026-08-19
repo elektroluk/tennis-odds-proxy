@@ -59,11 +59,12 @@ export default async function handler(req, res) {
 
       // ---------------------------------------------------
       // Specjalne wartości oznaczające:
-      // "daj najnowszy snapshot"
+      // "daj najnowsze snapshoty"
       // ---------------------------------------------------
 
       const latestAliases = new Set([
         "",
+        "all",
         "latest",
         "unknown",
         "current",
@@ -118,6 +119,7 @@ export default async function handler(req, res) {
       // filtrujemy konkretny mecz.
       //
       // Jeżeli Action wysłał:
+      // - all
       // - latest
       // - unknown
       // - current
@@ -147,8 +149,8 @@ export default async function handler(req, res) {
       );
 
       // Dla konkretnego fixture'u możemy pobrać historię.
-      // Dla latest/unknown pobieramy ostatnie snapshoty,
-      // żeby mieć również previous.
+      // Dla latest/all/unknown pobieramy ostatnie snapshoty,
+      // żeby mieć również poprzednie rekordy.
       params.set(
         "limit",
         "50"
@@ -211,7 +213,7 @@ export default async function handler(req, res) {
           ? rows[1]
           : null;
 
-      // Jeżeli Action użył latest/unknown,
+      // Jeżeli Action użył latest/all/unknown,
       // zwracamy rzeczywiste fixtureId najnowszego snapshotu.
       const resolvedFixtureId =
         latest?.fixture_id ??
@@ -267,12 +269,11 @@ export default async function handler(req, res) {
       return res.status(200).json({
         ok: true,
 
-        // To jest ID podane przez klienta.
-        // Dla latest/unknown może być null/puste.
+        // ID podane przez klienta.
         fixtureId:
           fixtureId || null,
 
-        // To jest rzeczywiste ID znalezionego snapshotu.
+        // Rzeczywiste ID znalezionego najnowszego snapshotu.
         resolvedFixtureId,
 
         market,
