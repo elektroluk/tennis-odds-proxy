@@ -40,6 +40,10 @@ export default async function handler(req, res) {
       const market = req.query?.market || "winner";
       const selection = req.query?.selection;
 
+      // ---------------------------------------------------
+      // fixtureId
+      // ---------------------------------------------------
+
       if (
         typeof fixtureId !== "string" ||
         fixtureId.trim() === ""
@@ -50,6 +54,17 @@ export default async function handler(req, res) {
         });
       }
 
+      if (fixtureId.trim().toLowerCase() === "all") {
+        return res.status(400).json({
+          ok: false,
+          error: "A specific fixtureId is required; fixtureId=all is not supported"
+        });
+      }
+
+      // ---------------------------------------------------
+      // market
+      // ---------------------------------------------------
+
       if (
         typeof market !== "string" ||
         market.trim() === ""
@@ -59,6 +74,10 @@ export default async function handler(req, res) {
           error: "market must be a non-empty string"
         });
       }
+
+      // ---------------------------------------------------
+      // selection
+      // ---------------------------------------------------
 
       if (
         selection !== undefined &&
@@ -73,36 +92,42 @@ export default async function handler(req, res) {
         });
       }
 
+      // ===================================================
+      // 2A. BUDOWA ZAPYTANIA SUPABASE
+      // ===================================================
+
       const params = new URLSearchParams();
 
       params.set(
         "fixture_id",
-        `eq.${fixtureId}`
+        `eq.${fixtureId.trim()}`
       );
 
       params.set(
         "market",
-        `eq.${market}`
+        `eq.${market.trim()}`
       );
 
-      // Jeżeli selection podano, filtruj tylko tę stronę rynku.
+      // Jeżeli selection została podana,
+      // historia dotyczy WYŁĄCZNIE tej selection.
       if (
         typeof selection === "string" &&
         selection.trim() !== ""
       ) {
         params.set(
           "selection",
-          `eq.${selection}`
+          `eq.${selection.trim()}`
         );
       }
 
-      // created_at jest źródłem kolejności snapshotów.
-      // Jest bezpieczniejsze niż sortowanie po test_id.
+      // created_at jest właściwym źródłem kolejności
+      // rzeczywistych snapshotów.
       params.set(
         "order",
         "created_at.desc"
       );
 
+      // Maksymalnie 50 snapshotów.
       params.set(
         "limit",
         "50"
@@ -110,6 +135,10 @@ export default async function handler(req, res) {
 
       const supabaseEndpoint =
         `${supabaseUrl}/rest/v1/tennis_predictions?${params.toString()}`;
+
+      // ===================================================
+      // 2B. ODCZYT Z SUPABASE
+      // ===================================================
 
       const supabaseResponse = await fetch(
         supabaseEndpoint,
@@ -148,19 +177,25 @@ export default async function handler(req, res) {
       }
 
       // ===================================================
-      // WYLICZENIE LATEST / PREVIOUS
+      // 2C. LATEST / PREVIOUS
       // ===================================================
 
-      const latest = rows.length > 0
-        ? rows[0]
-        : null;
+      const latest =
+        rows.length > 0
+          ? rows[0]
+          : null;
 
-      const previous = rows.length > 1
-        ? rows[1]
-        : null;
+      const previous =
+        rows.length > 1
+          ? rows[1]
+          : null;
 
       let deltaP = null;
       let deltaQuickP = null;
+
+      // Ponieważ selection jest filtrem GET,
+      // latest i previous powinny być tą samą selection.
+      // Mimo tego sprawdzamy to jawnie jako dodatkowe zabezpieczenie.
       let sameSelection = false;
 
       if (latest && previous) {
@@ -168,41 +203,57 @@ export default async function handler(req, res) {
           latest.fixture_id === previous.fixture_id &&
           latest.market === previous.market &&
           latest.selection === previous.selection;
+      }
 
-        if (
-          sameSelection &&
-          typeof latest.final_p === "number" &&
-          typeof previous.final_p === "number"
-        ) {
-          deltaP =
-            latest.final_p - previous.final_p;
-        }
+      if (
+        sameSelection &&
+        typeof latest.final_p === "number" &&
+        Number.isFinite(latest.final_p) &&
+        typeof previous.final_p === "number" &&
+        Number.isFinite(previous.final_p)
+      ) {
+        deltaP =
+          latest.final_p - previous.final_p;
+      }
 
-        if (
-          sameSelection &&
-          typeof latest.quick_p === "number" &&
-          typeof previous.quick_p === "number"
-        ) {
-          deltaQuickP =
-            latest.quick_p - previous.quick_p;
-        }
+      if (
+        sameSelection &&
+        typeof latest.quick_p === "number" &&
+        Number.isFinite(latest.quick_p) &&
+        typeof previous.quick_p === "number" &&
+        Number.isFinite(previous.quick_p)
+      ) {
+        deltaQuickP =
+          latest.quick_p - previous.quick_p;
       }
 
       // ===================================================
-      // ODPOWIEDŹ
+      // 2D. ODPOWIEDŹ GET
       // ===================================================
 
       return res.status(200).json({
         ok: true,
-        fixtureId,
-        market,
-        selection: selection || null,
+
+        fixtureId: fixtureId.trim(),
+
+        market: market.trim(),
+
+        selection:
+          typeof selection === "string"
+            ? selection.trim()
+            : null,
+
+        selectionFiltered:
+          typeof selection === "string" &&
+          selection.trim() !== "",
+
         count: rows.length,
 
         latest,
         previous,
 
         sameSelection,
+
         deltaP,
         deltaQuickP,
 
@@ -227,7 +278,11 @@ export default async function handler(req, res) {
 
     const body = req.body;
 
-    if (!body || typeof body !== "object") {
+    if (
+      !body ||
+      typeof body !== "object" ||
+      Array.isArray(body)
+    ) {
       return res.status(400).json({
         ok: false,
         error: "Request body must be a JSON object"
@@ -240,6 +295,10 @@ export default async function handler(req, res) {
       predictions
     } = body;
 
+    // -----------------------------------------------------
+    // testId
+    // -----------------------------------------------------
+
     if (
       typeof testId !== "string" ||
       testId.trim() === ""
@@ -249,6 +308,10 @@ export default async function handler(req, res) {
         error: "testId is required"
       });
     }
+
+    // -----------------------------------------------------
+    // predictions
+    // -----------------------------------------------------
 
     if (!Array.isArray(predictions)) {
       return res.status(400).json({
@@ -273,12 +336,24 @@ export default async function handler(req, res) {
     for (let i = 0; i < predictions.length; i++) {
       const p = predictions[i];
 
-      if (!p || typeof p !== "object") {
+      // ---------------------------------------------------
+      // prediction object
+      // ---------------------------------------------------
+
+      if (
+        !p ||
+        typeof p !== "object" ||
+        Array.isArray(p)
+      ) {
         return res.status(400).json({
           ok: false,
           error: `Invalid prediction at index ${i}`
         });
       }
+
+      // ---------------------------------------------------
+      // fixtureId
+      // ---------------------------------------------------
 
       if (
         typeof p.fixtureId !== "string" ||
@@ -290,6 +365,10 @@ export default async function handler(req, res) {
         });
       }
 
+      // ---------------------------------------------------
+      // player1 / player2
+      // ---------------------------------------------------
+
       if (
         typeof p.player1 !== "string" ||
         p.player1.trim() === "" ||
@@ -298,9 +377,14 @@ export default async function handler(req, res) {
       ) {
         return res.status(400).json({
           ok: false,
-          error: `player1 and player2 are required at index ${i}`
+          error:
+            `player1 and player2 are required at index ${i}`
         });
       }
+
+      // ---------------------------------------------------
+      // selection
+      // ---------------------------------------------------
 
       if (
         typeof p.selection !== "string" ||
@@ -308,9 +392,14 @@ export default async function handler(req, res) {
       ) {
         return res.status(400).json({
           ok: false,
-          error: `selection is required at index ${i}`
+          error:
+            `selection is required at index ${i}`
         });
       }
+
+      // ---------------------------------------------------
+      // entryOdds
+      // ---------------------------------------------------
 
       if (
         typeof p.entryOdds !== "number" ||
@@ -319,9 +408,14 @@ export default async function handler(req, res) {
       ) {
         return res.status(400).json({
           ok: false,
-          error: `entryOdds must be a number > 1 at index ${i}`
+          error:
+            `entryOdds must be a number > 1 at index ${i}`
         });
       }
+
+      // ---------------------------------------------------
+      // finalP
+      // ---------------------------------------------------
 
       if (
         typeof p.finalP !== "number" ||
@@ -331,9 +425,14 @@ export default async function handler(req, res) {
       ) {
         return res.status(400).json({
           ok: false,
-          error: `finalP must be between 0 and 100 at index ${i}`
+          error:
+            `finalP must be between 0 and 100 at index ${i}`
         });
       }
+
+      // ---------------------------------------------------
+      // decision
+      // ---------------------------------------------------
 
       if (
         typeof p.decision !== "string" ||
@@ -341,48 +440,106 @@ export default async function handler(req, res) {
       ) {
         return res.status(400).json({
           ok: false,
-          error: `decision is required at index ${i}`
+          error:
+            `decision is required at index ${i}`
         });
       }
 
+      // ===================================================
+      // 5A. NORMALIZOWANY ROW
+      // ===================================================
+
       rows.push({
-        test_id: testId,
-        model_version: modelVersion,
+        test_id: testId.trim(),
 
-        fixture_id: p.fixtureId,
-        tournament: p.tournament ?? null,
-        round: p.round ?? null,
-        player1: p.player1,
-        player2: p.player2,
-        start_time: p.startTime ?? null,
+        model_version:
+          typeof modelVersion === "string" &&
+          modelVersion.trim() !== ""
+            ? modelVersion.trim()
+            : "v3.9",
 
-        market: p.market ?? "winner",
-        selection: p.selection,
-        entry_odds: p.entryOdds,
+        fixture_id: p.fixtureId.trim(),
 
-        quick_p: p.quickP ?? null,
-        final_p: p.finalP,
-        p_lower: p.pLower ?? null,
-        p_upper: p.pUpper ?? null,
+        tournament:
+          p.tournament ?? null,
 
-        implied_p: p.impliedP ?? null,
-        fair_odds: p.fairOdds ?? null,
-        edge_pp: p.edgePp ?? null,
-        ev: p.ev ?? null,
-        ev_conservative: p.evConservative ?? null,
-        break_even: p.breakEven ?? null,
-        bet_threshold_odds: p.betThresholdOdds ?? null,
+        round:
+          p.round ?? null,
 
-        confidence: p.confidence ?? null,
-        data_quality: p.dataQuality ?? null,
-        market_quality: p.marketQuality ?? null,
+        player1:
+          p.player1.trim(),
 
-        deviation_class: p.deviationClass ?? null,
-        market_move_flag: p.marketMoveFlag ?? false,
+        player2:
+          p.player2.trim(),
 
-        decision: p.decision,
+        start_time:
+          p.startTime ?? null,
 
-        notes: p.notes ?? null
+        market:
+          typeof p.market === "string" &&
+          p.market.trim() !== ""
+            ? p.market.trim()
+            : "winner",
+
+        selection:
+          p.selection.trim(),
+
+        entry_odds:
+          p.entryOdds,
+
+        quick_p:
+          p.quickP ?? null,
+
+        final_p:
+          p.finalP,
+
+        p_lower:
+          p.pLower ?? null,
+
+        p_upper:
+          p.pUpper ?? null,
+
+        implied_p:
+          p.impliedP ?? null,
+
+        fair_odds:
+          p.fairOdds ?? null,
+
+        edge_pp:
+          p.edgePp ?? null,
+
+        ev:
+          p.ev ?? null,
+
+        ev_conservative:
+          p.evConservative ?? null,
+
+        break_even:
+          p.breakEven ?? null,
+
+        bet_threshold_odds:
+          p.betThresholdOdds ?? null,
+
+        confidence:
+          p.confidence ?? null,
+
+        data_quality:
+          p.dataQuality ?? null,
+
+        market_quality:
+          p.marketQuality ?? null,
+
+        deviation_class:
+          p.deviationClass ?? null,
+
+        market_move_flag:
+          p.marketMoveFlag ?? false,
+
+        decision:
+          p.decision.trim(),
+
+        notes:
+          p.notes ?? null
       });
     }
 
@@ -398,14 +555,22 @@ export default async function handler(req, res) {
       supabaseEndpoint,
       {
         method: "POST",
+
         headers: {
           "apikey": supabaseKey,
-          "Authorization": `Bearer ${supabaseKey}`,
-          "Content-Type": "application/json",
+
+          "Authorization":
+            `Bearer ${supabaseKey}`,
+
+          "Content-Type":
+            "application/json",
+
           "Prefer":
             "resolution=merge-duplicates,return=representation"
         },
-        body: JSON.stringify(rows)
+
+        body:
+          JSON.stringify(rows)
       }
     );
 
@@ -417,36 +582,60 @@ export default async function handler(req, res) {
         ok: false,
         error: "Supabase insert failed",
         status: supabaseResponse.status,
-        details: responseText.slice(0, 3000)
+        details:
+          responseText.slice(0, 3000)
       });
     }
+
+    // =====================================================
+    // 7. PARSOWANIE ODPOWIEDZI
+    // =====================================================
 
     let savedRows;
 
     try {
-      savedRows = JSON.parse(responseText);
+      savedRows =
+        JSON.parse(responseText);
     } catch {
       savedRows = [];
     }
 
     // =====================================================
-    // 7. ODPOWIEDŹ POST
+    // 8. ODPOWIEDŹ POST
     // =====================================================
 
     return res.status(200).json({
       ok: true,
-      testId,
-      modelVersion,
-      received: rows.length,
-      saved: Array.isArray(savedRows)
-        ? savedRows.length
-        : rows.length
+
+      testId:
+        testId.trim(),
+
+      modelVersion:
+        typeof modelVersion === "string" &&
+        modelVersion.trim() !== ""
+          ? modelVersion.trim()
+          : "v3.9",
+
+      received:
+        rows.length,
+
+      saved:
+        Array.isArray(savedRows)
+          ? savedRows.length
+          : rows.length
     });
 
   } catch (error) {
+    // =====================================================
+    // 9. NIEOCZEKIWANY BŁĄD
+    // =====================================================
+
     return res.status(500).json({
       ok: false,
-      error: "Tracker proxy error",
+
+      error:
+        "Tracker proxy error",
+
       details:
         error instanceof Error
           ? error.message
