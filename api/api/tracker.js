@@ -32,12 +32,13 @@ export default async function handler(req, res) {
     }
 
     // =====================================================
-    // 2. GET — ODCZYT OSTATNIEJ PREDYKCJI
+    // 2. GET — HISTORIA PREDYKCJI
     // =====================================================
 
     if (req.method === "GET") {
       const fixtureId = req.query?.fixtureId;
       const market = req.query?.market || "winner";
+      const selection = req.query?.selection;
 
       if (
         typeof fixtureId !== "string" ||
@@ -46,6 +47,29 @@ export default async function handler(req, res) {
         return res.status(400).json({
           ok: false,
           error: "fixtureId is required"
+        });
+      }
+
+      if (
+        typeof market !== "string" ||
+        market.trim() === ""
+      ) {
+        return res.status(400).json({
+          ok: false,
+          error: "market must be a non-empty string"
+        });
+      }
+
+      if (
+        selection !== undefined &&
+        (
+          typeof selection !== "string" ||
+          selection.trim() === ""
+        )
+      ) {
+        return res.status(400).json({
+          ok: false,
+          error: "selection must be a non-empty string when provided"
         });
       }
 
@@ -61,17 +85,27 @@ export default async function handler(req, res) {
         `eq.${market}`
       );
 
-      // testId ma format:
-      // daily-YYYY-MM-DD-v3.9-HHMMSS
-      // więc sortowanie malejące daje najnowszy snapshot.
+      // Jeżeli selection podano, filtruj tylko tę stronę rynku.
+      if (
+        typeof selection === "string" &&
+        selection.trim() !== ""
+      ) {
+        params.set(
+          "selection",
+          `eq.${selection}`
+        );
+      }
+
+      // created_at jest źródłem kolejności snapshotów.
+      // Jest bezpieczniejsze niż sortowanie po test_id.
       params.set(
         "order",
-        "test_id.desc"
+        "created_at.desc"
       );
 
       params.set(
         "limit",
-        "20"
+        "50"
       );
 
       const supabaseEndpoint =
@@ -109,17 +143,75 @@ export default async function handler(req, res) {
         rows = [];
       }
 
+      if (!Array.isArray(rows)) {
+        rows = [];
+      }
+
+      // ===================================================
+      // WYLICZENIE LATEST / PREVIOUS
+      // ===================================================
+
+      const latest = rows.length > 0
+        ? rows[0]
+        : null;
+
+      const previous = rows.length > 1
+        ? rows[1]
+        : null;
+
+      let deltaP = null;
+      let deltaQuickP = null;
+      let sameSelection = false;
+
+      if (latest && previous) {
+        sameSelection =
+          latest.fixture_id === previous.fixture_id &&
+          latest.market === previous.market &&
+          latest.selection === previous.selection;
+
+        if (
+          sameSelection &&
+          typeof latest.final_p === "number" &&
+          typeof previous.final_p === "number"
+        ) {
+          deltaP =
+            latest.final_p - previous.final_p;
+        }
+
+        if (
+          sameSelection &&
+          typeof latest.quick_p === "number" &&
+          typeof previous.quick_p === "number"
+        ) {
+          deltaQuickP =
+            latest.quick_p - previous.quick_p;
+        }
+      }
+
+      // ===================================================
+      // ODPOWIEDŹ
+      // ===================================================
+
       return res.status(200).json({
         ok: true,
         fixtureId,
         market,
-        count: Array.isArray(rows) ? rows.length : 0,
-        predictions: Array.isArray(rows) ? rows : []
+        selection: selection || null,
+        count: rows.length,
+
+        latest,
+        previous,
+
+        sameSelection,
+        deltaP,
+        deltaQuickP,
+
+        predictions: rows
       });
     }
 
     // =====================================================
-    // 3. POST — ZAPIS PREDYKCJI
+    // 3. TYLKO GET / POST
     // =====================================================
 
     if (req.method !== "POST") {
@@ -130,7 +222,7 @@ export default async function handler(req, res) {
     }
 
     // =====================================================
-    // 4. WALIDACJA BODY
+    // 4. POST — ZAPIS PREDYKCJI
     // =====================================================
 
     const body = req.body;
@@ -173,7 +265,7 @@ export default async function handler(req, res) {
     }
 
     // =====================================================
-    // 5. NORMALIZACJA I WALIDACJA
+    // 5. WALIDACJA I NORMALIZACJA
     // =====================================================
 
     const rows = [];
@@ -200,7 +292,9 @@ export default async function handler(req, res) {
 
       if (
         typeof p.player1 !== "string" ||
-        typeof p.player2 !== "string"
+        p.player1.trim() === "" ||
+        typeof p.player2 !== "string" ||
+        p.player2.trim() === ""
       ) {
         return res.status(400).json({
           ok: false,
@@ -297,7 +391,8 @@ export default async function handler(req, res) {
     // =====================================================
 
     const supabaseEndpoint =
-      `${supabaseUrl}/rest/v1/tennis_predictions?on_conflict=test_id,fixture_id,market,selection`;
+      `${supabaseUrl}/rest/v1/tennis_predictions` +
+      `?on_conflict=test_id,fixture_id,market,selection`;
 
     const supabaseResponse = await fetch(
       supabaseEndpoint,
@@ -307,7 +402,8 @@ export default async function handler(req, res) {
           "apikey": supabaseKey,
           "Authorization": `Bearer ${supabaseKey}`,
           "Content-Type": "application/json",
-          "Prefer": "resolution=merge-duplicates,return=representation"
+          "Prefer":
+            "resolution=merge-duplicates,return=representation"
         },
         body: JSON.stringify(rows)
       }
@@ -334,7 +430,7 @@ export default async function handler(req, res) {
     }
 
     // =====================================================
-    // 7. ODPOWIEDŹ
+    // 7. ODPOWIEDŹ POST
     // =====================================================
 
     return res.status(200).json({
