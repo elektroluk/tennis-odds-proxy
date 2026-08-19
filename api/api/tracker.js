@@ -36,39 +36,48 @@ export default async function handler(req, res) {
     // =====================================================
 
     if (req.method === "GET") {
-      const fixtureId = req.query?.fixtureId;
-      const market = req.query?.market || "winner";
-      const selection = req.query?.selection;
+      const rawFixtureId = req.query?.fixtureId;
+      const rawMarket = req.query?.market;
+      const rawSelection = req.query?.selection;
+
+      const market =
+        typeof rawMarket === "string" &&
+        rawMarket.trim() !== ""
+          ? rawMarket.trim()
+          : "winner";
+
+      const fixtureId =
+        typeof rawFixtureId === "string"
+          ? rawFixtureId.trim()
+          : "";
+
+      const selection =
+        typeof rawSelection === "string" &&
+        rawSelection.trim() !== ""
+          ? rawSelection.trim()
+          : null;
 
       // ---------------------------------------------------
-      // fixtureId
+      // Specjalne wartości oznaczające:
+      // "daj najnowszy snapshot"
       // ---------------------------------------------------
 
-      if (
-        typeof fixtureId !== "string" ||
-        fixtureId.trim() === ""
-      ) {
-        return res.status(400).json({
-          ok: false,
-          error: "fixtureId is required"
-        });
-      }
+      const latestAliases = new Set([
+        "",
+        "latest",
+        "unknown",
+        "current",
+        "most_recent"
+      ]);
 
-      if (fixtureId.trim().toLowerCase() === "all") {
-        return res.status(400).json({
-          ok: false,
-          error: "A specific fixtureId is required; fixtureId=all is not supported"
-        });
-      }
+      const requestLatest =
+        latestAliases.has(fixtureId.toLowerCase());
 
       // ---------------------------------------------------
-      // market
+      // Walidacja market
       // ---------------------------------------------------
 
-      if (
-        typeof market !== "string" ||
-        market.trim() === ""
-      ) {
+      if (!market) {
         return res.status(400).json({
           ok: false,
           error: "market must be a non-empty string"
@@ -76,14 +85,15 @@ export default async function handler(req, res) {
       }
 
       // ---------------------------------------------------
-      // selection
+      // Walidacja selection
       // ---------------------------------------------------
 
       if (
-        selection !== undefined &&
+        rawSelection !== undefined &&
+        rawSelection !== null &&
         (
-          typeof selection !== "string" ||
-          selection.trim() === ""
+          typeof rawSelection !== "string" ||
+          rawSelection.trim() === ""
         )
       ) {
         return res.status(400).json({
@@ -98,36 +108,47 @@ export default async function handler(req, res) {
 
       const params = new URLSearchParams();
 
-      params.set(
-        "fixture_id",
-        `eq.${fixtureId.trim()}`
-      );
-
+      // Zawsze filtrujemy po rynku.
       params.set(
         "market",
-        `eq.${market.trim()}`
+        `eq.${market}`
       );
 
-      // Jeżeli selection została podana,
-      // historia dotyczy WYŁĄCZNIE tej selection.
-      if (
-        typeof selection === "string" &&
-        selection.trim() !== ""
-      ) {
+      // Jeżeli podano PRAWDZIWY fixtureId,
+      // filtrujemy konkretny mecz.
+      //
+      // Jeżeli Action wysłał:
+      // - latest
+      // - unknown
+      // - current
+      // - most_recent
+      // albo nie podał fixtureId,
+      // pobieramy najnowsze snapshoty z danego marketu.
+      if (!requestLatest) {
         params.set(
-          "selection",
-          `eq.${selection.trim()}`
+          "fixture_id",
+          `eq.${fixtureId}`
         );
       }
 
-      // created_at jest właściwym źródłem kolejności
-      // rzeczywistych snapshotów.
+      // Jeżeli selection została podana,
+      // historia dotyczy WYŁĄCZNIE tej selection.
+      if (selection !== null) {
+        params.set(
+          "selection",
+          `eq.${selection}`
+        );
+      }
+
+      // Rzeczywista kolejność snapshotów.
       params.set(
         "order",
         "created_at.desc"
       );
 
-      // Maksymalnie 50 snapshotów.
+      // Dla konkretnego fixture'u możemy pobrać historię.
+      // Dla latest/unknown pobieramy ostatnie snapshoty,
+      // żeby mieć również previous.
       params.set(
         "limit",
         "50"
@@ -190,12 +211,24 @@ export default async function handler(req, res) {
           ? rows[1]
           : null;
 
+      // Jeżeli Action użył latest/unknown,
+      // zwracamy rzeczywiste fixtureId najnowszego snapshotu.
+      const resolvedFixtureId =
+        latest?.fixture_id ??
+        (
+          requestLatest
+            ? null
+            : fixtureId
+        );
+
       let deltaP = null;
       let deltaQuickP = null;
 
-      // Ponieważ selection jest filtrem GET,
-      // latest i previous powinny być tą samą selection.
-      // Mimo tego sprawdzamy to jawnie jako dodatkowe zabezpieczenie.
+      // ---------------------------------------------------
+      // Porównanie tylko:
+      // fixtureId + market + selection
+      // ---------------------------------------------------
+
       let sameSelection = false;
 
       if (latest && previous) {
@@ -234,30 +267,39 @@ export default async function handler(req, res) {
       return res.status(200).json({
         ok: true,
 
-        fixtureId: fixtureId.trim(),
+        // To jest ID podane przez klienta.
+        // Dla latest/unknown może być null/puste.
+        fixtureId:
+          fixtureId || null,
 
-        market: market.trim(),
+        // To jest rzeczywiste ID znalezionego snapshotu.
+        resolvedFixtureId,
 
-        selection:
-          typeof selection === "string"
-            ? selection.trim()
-            : null,
+        market,
+
+        selection,
 
         selectionFiltered:
-          typeof selection === "string" &&
-          selection.trim() !== "",
+          selection !== null,
 
-        count: rows.length,
+        latestRequested:
+          requestLatest,
+
+        count:
+          rows.length,
 
         latest,
+
         previous,
 
         sameSelection,
 
         deltaP,
+
         deltaQuickP,
 
-        predictions: rows
+        predictions:
+          rows
       });
     }
 
@@ -361,7 +403,8 @@ export default async function handler(req, res) {
       ) {
         return res.status(400).json({
           ok: false,
-          error: `fixtureId is required at index ${i}`
+          error:
+            `fixtureId is required at index ${i}`
         });
       }
 
@@ -450,7 +493,8 @@ export default async function handler(req, res) {
       // ===================================================
 
       rows.push({
-        test_id: testId.trim(),
+        test_id:
+          testId.trim(),
 
         model_version:
           typeof modelVersion === "string" &&
@@ -458,7 +502,8 @@ export default async function handler(req, res) {
             ? modelVersion.trim()
             : "v3.9",
 
-        fixture_id: p.fixtureId.trim(),
+        fixture_id:
+          p.fixtureId.trim(),
 
         tournament:
           p.tournament ?? null,
